@@ -56,7 +56,7 @@ main = command_ $ named @"messaging" $ keypair :+: author :+: read
         Left _error -> do
           putStr "encryption error: "
           print _error
-        Right twisted -> encodeFile (to <> ":" <> show time) twisted 
+        Right twisted -> BS.writeFile (to <> ":" <> show time) twisted 
     keypair = sub @"keypair" $ arg @"name" \name -> raw do
       putStrLn "generating keypair"
       (publicKey, privateKey) <- generate 2048 0x10001
