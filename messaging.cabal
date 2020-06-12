@@ -34,3 +34,13 @@ executable messaging
                        messaging
   -- hs-source-dirs:
   default-language:    Haskell2010
+
+test-suite messaging-test
+  main-is:             Main.hs
+  hs-source-dirs:      test
+  build-depends:       base >=4.12 && <5,
+                       file-path-th >=0.1 && <0.2,
+                       binary >=0.8 && <0.9,
+                       bytestring,
+                       messaging
+  type:                exitcode-stdio-1.0

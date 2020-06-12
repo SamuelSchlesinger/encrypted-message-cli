@@ -68,6 +68,30 @@ type CMD =
             & Raw
   )
 
+decodeAndVerifyMessage :: PrivateKey -> PublicKey -> BS.ByteString -> Maybe String
+decodeAndVerifyMessage privateKey publicKey bs = do
+  case decodeOrFail (BSL.fromStrict bs) of
+    Left e -> do
+      Nothing
+    Right (_, _, SecretMessage sig msg) ->
+      case decrypt Nothing (defaultOAEPParams SHA512) privateKey msg of
+        Left e -> Nothing
+        Right untwisted -> if verify (defaultPSSParams SHA512) publicKey untwisted sig then Just (BS8.unpack untwisted) else Nothing
+
+encodeAndSignMessage :: PrivateKey -> PublicKey -> String -> IO (Maybe BSL.ByteString)
+encodeAndSignMessage privateKey publicKey msg = do
+  let bsMsg = BS8.pack msg
+  signature <- sign Nothing (defaultPSSParams SHA512) privateKey bsMsg
+  case signature of
+    Left e -> do
+      pure Nothing
+    Right sig -> do
+      encryptedMsg <- encrypt (defaultOAEPParams SHA512) publicKey bsMsg
+      case encryptedMsg of
+        Left e -> do
+          pure Nothing
+        Right twisted -> pure (Just (encode (SecretMessage sig twisted)))
+
 program :: ProgramT CMD IO ()
 program = named @"messaging" $ flag @"verbose" $ \verbose -> keypair verbose :+: write verbose :+: read verbose
   where
@@ -80,17 +104,9 @@ program = named @"messaging" $ flag @"verbose" $ \verbose -> keypair verbose :+:
           privateKey <- unPrivateKeyFile <$> decodeFile (me <> ".private")
           publicKey <- unPublicKeyFile <$> decodeFile (you <> ".public")
           bs <- BS.readFile source
-          case decodeOrFail (BSL.fromStrict bs) of
-            Left e -> do
-              when verbose $ putStrLn "decoding error:" >> print e
-            Right (_, _, SecretMessage sig msg) -> do
-                case decrypt Nothing (defaultOAEPParams SHA512) privateKey msg of
-                  Left e -> do
-                    when verbose $ putStr "decryption error:" >> print e
-                  Right untwisted ->
-                    if verify (defaultPSSParams SHA512) publicKey untwisted sig
-                      then putStrLn $ BS8.unpack untwisted
-                    else when verbose $ putStrLn "could not verify signature"
+          case decodeAndVerifyMessage privateKey publicKey bs of
+            Nothing -> putStrLn "Could not read secret message"
+            Just secretMessage -> putStrLn $ "Message: " <> secretMessage
 
     write verbose = 
       sub @"write" 
@@ -98,29 +114,25 @@ program = named @"messaging" $ flag @"verbose" $ \verbose -> keypair verbose :+:
         arg \you ->
         arg \file ->
         arg \message -> raw do
-          let bsMsg = BS8.pack message
           when verbose $ putStrLn "authoring message"
           privateKey <- unPrivateKeyFile <$> decodeFile (me <> ".private")
           publicKey <- unPublicKeyFile <$> decodeFile (you <> ".public")
-          signature <- sign Nothing (defaultPSSParams SHA512) privateKey bsMsg
-          case signature of
-            Left e -> do
-              when verbose $ putStr "signature error: " >> print e
-            Right sig -> do
-              encryptedMsg <- encrypt (defaultOAEPParams SHA512) publicKey bsMsg
-              case encryptedMsg of
-                Left e -> do
-                  when verbose $ putStr "encryption error: " >> print e
-                Right twisted -> encodeFile file (SecretMessage sig twisted)
+          secretMessage <- encodeAndSignMessage privateKey publicKey message
+          case secretMessage of
+            Nothing -> putStrLn "Could not encrypt, sign, and decode secret message" 
+            Just encodedSecret -> BSL.writeFile file encodedSecret
 
     keypair verbose =
       sub @"key" 
       $ sub @"new" 
       $ arg \name -> raw do
           when verbose $ putStrLn "generating keypair"
-          (publicKey, privateKey) <- generate 2048 0x10001
+          (publicKey, privateKey) <- generateKeypair
           encodeFile (name <> ".public") (PublicKeyFile publicKey)
           encodeFile (name <> ".private") (PrivateKeyFile privateKey)
+
+generateKeypair :: IO (PublicKey, PrivateKey)
+generateKeypair = generate 2048 0x10001
 
 main :: IO ()
 main = command_ (program :+: sub @"help" (usage @CMD) :+: raw (putStrLn "try: messaging help"))
